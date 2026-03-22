@@ -1,2 +1,0 @@
-[console_scripts]
-inferbench = local_inferbench.cli:cli
