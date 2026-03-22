@@ -24,6 +24,9 @@ pip install local-inferbench[gpu]
 # Run a benchmark (includes quality scoring by default)
 inferbench run --model qwen3:0.6b --profile quick
 
+# Compare multiple models in one run (shows comparison table at the end)
+inferbench run --model qwen3:0.6b --model qwen3:1.7b --profile quick
+
 # Compare last 2 runs
 inferbench compare --last 2
 

@@ -51,9 +51,18 @@ def run(
 
     bench = Benchmark(models=list(model), config=config, base_url=base_url, db_path=db_path)
     try:
-        bench.run()
+        results = bench.run()
     finally:
         bench.close()
+
+    if len(results) > 1:
+        from local_inferbench.results import ComparisonResult
+
+        console.print()
+        comparison = ComparisonResult(results=results)
+        comparison.table()
+        fastest = comparison.fastest()
+        console.print(f"\n[bold green]Fastest:[/bold green] {fastest.adapter_name}/{fastest.model_id}")
 
 
 @cli.command()
