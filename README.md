@@ -1,0 +1,128 @@
+# local-inferbench
+
+A benchmarking framework for Ollama models. Think `pytest` for local LLM performance.
+
+Run standardized benchmarks across Ollama models. Collect hardware-aware metrics, quality scores, and compare results over time.
+
+## Installation
+
+```bash
+pip install local-inferbench
+```
+
+With GPU monitoring (NVIDIA):
+
+```bash
+pip install local-inferbench[gpu]
+```
+
+## Quick Start
+
+### CLI
+
+```bash
+# Run a benchmark (includes quality scoring by default)
+inferbench run --model qwen3:0.6b --profile quick
+
+# Compare last 2 runs
+inferbench compare --last 2
+
+# Get model recommendations for your hardware
+inferbench recommend --suggest-pull
+
+# Re-score a past run with per-prompt breakdown
+inferbench score 1
+
+# View run history
+inferbench history
+
+# Export results
+inferbench export 1 --format json --output results.json
+
+# List available profiles
+inferbench profiles
+
+# Show hardware info
+inferbench info
+```
+
+### Python API
+
+```python
+from local_inferbench import Benchmark, BenchmarkConfig
+
+bench = Benchmark(models=["qwen3:0.6b"], config=BenchmarkConfig(profile="quick", warmup_runs=2))
+results = bench.run()
+results[0].summary()
+```
+
+### Compare Multiple Models
+
+```python
+from local_inferbench import Benchmark, BenchmarkConfig
+from local_inferbench.results import ComparisonResult
+
+bench = Benchmark(
+    models=["qwen3:0.6b", "qwen3:1.7b"],
+    config=BenchmarkConfig(profile="quick"),
+)
+results = bench.run()
+
+comparison = ComparisonResult(results=results)
+comparison.table()
+print(f"Fastest: {comparison.fastest().model_id}")
+```
+
+### Model Recommendations
+
+```python
+from local_inferbench import recommend_models
+
+# Get recommendations for installed models based on your hardware
+recs = recommend_models()
+for r in recs:
+    print(f"{r.model_name}: {r.tier} ({r.estimated_vram_gb:.1f} GB)")
+```
+
+## Features
+
+### Performance Metrics
+- **Time to First Token (TTFT):** mean, median, p95, min, max
+- **Throughput:** tokens/sec mean, median, p95
+- **Prompt eval speed:** prompt tokens processed per second
+- **Hardware:** GPU utilization, VRAM usage, CPU usage, RAM usage (sampled in background)
+
+### Quality Scoring
+- **Length:** Is the response appropriately sized for the category?
+- **Coherence:** Repetition detection, entropy analysis, structural checks
+- **Relevance:** Keyword overlap with prompt, echo detection
+- **Completeness:** Did the model finish naturally or get truncated?
+- **Category-specific:** Code patterns for code prompts, step-by-step for reasoning, structured output for extraction, etc.
+
+### Hardware-Aware Model Recommendations
+- Estimates VRAM requirements from model size and quantization
+- Classifies models as optimal/feasible/too_large for your hardware
+- Suggests well-known models to download that fit your system
+
+## Benchmark Profiles
+
+| Profile | Prompts | Purpose |
+|---------|---------|---------|
+| `quick` | 10 | Fast sanity check across core categories |
+| `standard` | 50 | Thorough benchmark across diverse categories |
+| `stress` | 20 | Sustained throughput with long-form generation |
+
+Custom profiles are supported via YAML files — pass a file path to `--profile`.
+
+## Results Storage
+
+Results are stored in SQLite at `~/.local-inferbench/results.db`. Use `inferbench history` to browse, `inferbench compare` to diff runs, and `inferbench export` to get JSON/CSV.
+
+## Requirements
+
+- Python 3.10+
+- A running [Ollama](https://ollama.com) server
+
+## License
+
+MIT

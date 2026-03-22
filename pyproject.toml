@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-inferbench"
+version = "0.2.0"
+description = "A unified benchmarking framework for local LLM inference backends"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "local-inferbench contributors" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "click>=8.1",
+    "httpx>=0.25",
+    "psutil>=5.9",
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+gpu = ["nvidia-ml-py>=12.0"]
+pandas = ["pandas>=2.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+all = ["local-inferbench[gpu,pandas,dev]"]
+
+[project.scripts]
+inferbench = "local_inferbench.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+local_inferbench = ["py.typed", "prompts/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
