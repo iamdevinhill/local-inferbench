@@ -16,7 +16,7 @@ def cli() -> None:
 
 
 @cli.command()
-@click.option("--model", required=True, help="Ollama model name")
+@click.option("--model", required=True, multiple=True, help="Ollama model name(s) — repeat for multiple")
 @click.option("--profile", default="quick", help="Benchmark profile name or YAML path")
 @click.option("--warmup", default=2, type=int, help="Number of warmup runs")
 @click.option("--max-tokens", default=512, type=int, help="Max tokens per generation")
@@ -26,7 +26,7 @@ def cli() -> None:
 @click.option("--db-path", default=None, help="Custom path for results database")
 @click.option("--no-scoring", is_flag=True, help="Disable quality scoring")
 def run(
-    model: str,
+    model: tuple[str, ...],
     profile: str,
     warmup: int,
     max_tokens: int,
@@ -49,7 +49,7 @@ def run(
         quality_scoring=not no_scoring,
     )
 
-    bench = Benchmark(models=[model], config=config, base_url=base_url, db_path=db_path)
+    bench = Benchmark(models=list(model), config=config, base_url=base_url, db_path=db_path)
     try:
         bench.run()
     finally:
