@@ -10,7 +10,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="0.2.0", prog_name="inferbench")
+@click.version_option(version="0.2.1", prog_name="inferbench")
 def cli() -> None:
     """inferbench — benchmark Ollama models."""
 

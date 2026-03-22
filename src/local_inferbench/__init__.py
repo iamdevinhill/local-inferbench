@@ -19,4 +19,4 @@ __all__ = [
     "compute_scoring_summary",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
