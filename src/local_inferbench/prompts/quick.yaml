@@ -5,16 +5,54 @@ prompts:
     text: "Explain step by step why heavier objects don't fall faster than lighter objects in a vacuum."
   - category: reasoning
     text: "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Explain your reasoning."
+    answer_type: contains
+    expected_answer: ["$0.05", "0.05", "five cents", "5 cents"]
   - category: code
     text: "Write a Python function that checks if a string is a valid IPv4 address without using regex."
+    answer_type: code_test
+    test_cases:
+      - function: is_valid_ipv4
+        input: "192.168.1.1"
+        expected: true
+      - function: is_valid_ipv4
+        input: "255.255.255.255"
+        expected: true
+      - function: is_valid_ipv4
+        input: "256.1.1.1"
+        expected: false
+      - function: is_valid_ipv4
+        input: "1.2.3"
+        expected: false
+      - function: is_valid_ipv4
+        input: ""
+        expected: false
+      - function: is_valid_ipv4
+        input: "1.2.3.4.5"
+        expected: false
+      - function: is_valid_ipv4
+        input: "01.01.01.01"
+        expected: false
   - category: code
     text: "Write a Python function that finds the longest common subsequence of two strings. Include time and space complexity analysis."
+    answer_type: code_test
+    test_cases:
+      - function: longest_common_subsequence
+        input: ["abcde", "ace"]
+        expected: "ace"
+      - function: longest_common_subsequence
+        input: ["abc", "abc"]
+        expected: "abc"
+      - function: longest_common_subsequence
+        input: ["abc", "def"]
+        expected: ""
   - category: creative
     text: "Write a three-paragraph short story about a lighthouse keeper who discovers a message in a bottle."
   - category: creative
     text: "Write a haiku about debugging code at 3am."
   - category: extraction
     text: "Extract all the dates and associated events from the following text: 'The company was founded on March 15, 2001. It went public on July 22, 2008. The merger was completed on November 3, 2019.'"
+    answer_type: contains
+    expected_answer: ["March 15, 2001", "July 22, 2008", "November 3, 2019"]
   - category: summarization
     text: "Summarize the key differences between TCP and UDP in networking. Be concise but thorough."
   - category: instruction

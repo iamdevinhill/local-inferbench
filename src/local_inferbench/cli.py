@@ -10,7 +10,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="0.2.1", prog_name="inferbench")
+@click.version_option(version="0.3.0", prog_name="inferbench")
 def cli() -> None:
     """inferbench — benchmark Ollama models."""
 
@@ -338,8 +338,9 @@ def recommend(base_url: str, show_all: bool, suggest_pull: bool) -> None:
 @click.option("--db-path", default=None, help="Custom path for results database")
 def score(run_id: int, db_path: str | None) -> None:
     """Score (or re-score) a past benchmark run for quality."""
-    from local_inferbench.scoring import score_response, compute_scoring_summary, ScoringSummary
+    from local_inferbench.scoring import score_response, compute_scoring_summary, compute_corpus_idf
     from local_inferbench.storage import Storage
+    from local_inferbench.prompts.registry import load_profile
 
     storage = Storage(db_path)
     rd = storage.get_run(run_id)
@@ -360,15 +361,36 @@ def score(run_id: int, db_path: str | None) -> None:
     config = rd.get("config") or {}
     max_tokens = config.get("max_tokens", 512)
 
+    # Try to load the profile for prompt metadata (expected answers, test cases)
+    profile_name = rd.get("profile", "")
+    prompt_lookup: dict[str, object] = {}
+    try:
+        profile = load_profile(profile_name)
+        for p in profile.prompts:
+            prompt_lookup[p.text] = p
+        corpus_idf = compute_corpus_idf([p.text for p in profile.prompts])
+    except Exception:
+        corpus_idf = compute_corpus_idf([gr["prompt_text"] for gr in gen_results])
+
     response_scores = []
     for gr in gen_results:
         result = gr["result"]
+        prompt = prompt_lookup.get(gr["prompt_text"])
+        kwargs: dict[str, object] = {}
+        if prompt is not None:
+            kwargs["expected_answer"] = prompt.expected_answer  # type: ignore[attr-defined]
+            kwargs["answer_type"] = prompt.answer_type  # type: ignore[attr-defined]
+            kwargs["numeric_answer"] = prompt.numeric_answer  # type: ignore[attr-defined]
+            kwargs["numeric_tolerance"] = prompt.numeric_tolerance  # type: ignore[attr-defined]
+            kwargs["test_cases"] = prompt.test_cases  # type: ignore[attr-defined]
         rs = score_response(
             prompt_text=gr["prompt_text"],
             prompt_category=gr["prompt_category"],
             response_text=result["text"],
             finish_reason=result["finish_reason"],
             max_tokens=max_tokens,
+            corpus_idf=corpus_idf,
+            **kwargs,
         )
         response_scores.append(rs)
 
@@ -398,6 +420,7 @@ def score(run_id: int, db_path: str | None) -> None:
     detail_table.add_column("Relevance", justify="right")
     detail_table.add_column("Complete", justify="right")
     detail_table.add_column("Category", justify="right")
+    detail_table.add_column("Correct", justify="right")
     detail_table.add_column("Overall", justify="right")
 
     for i, rs in enumerate(response_scores, 1):
@@ -409,6 +432,7 @@ def score(run_id: int, db_path: str | None) -> None:
             f"{rs.relevance_score:.2f}",
             f"{rs.completeness_score:.2f}",
             f"{rs.category_score:.2f}",
+            f"{rs.correctness_score:.2f}",
             f"{rs.overall_score:.3f}",
         )
 

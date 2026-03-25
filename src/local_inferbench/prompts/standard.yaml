@@ -6,36 +6,118 @@ prompts:
     text: "Explain step by step why heavier objects don't fall faster than lighter objects in a vacuum."
   - category: reasoning
     text: "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Explain your reasoning."
+    answer_type: contains
+    expected_answer: ["$0.05", "0.05", "five cents", "5 cents"]
   - category: reasoning
     text: "If all roses are flowers and some flowers fade quickly, can we conclude that some roses fade quickly? Explain why or why not using formal logic."
+    answer_type: contains
+    expected_answer: ["cannot conclude", "does not follow", "no, we cannot", "not valid", "invalid", "fallacy"]
   - category: reasoning
     text: "You have 12 identical-looking coins. One is counterfeit and has a different weight. Using a balance scale only 3 times, how do you find the counterfeit coin and determine if it's heavier or lighter?"
   - category: reasoning
     text: "Three people check into a hotel room that costs $30. They each pay $10. The manager realizes the room costs $25 and sends $5 back. The bellhop keeps $2 and gives each person $1. Each person paid $9, totaling $27, plus $2 the bellhop kept equals $29. Where is the missing dollar?"
+    answer_type: contains
+    expected_answer: ["no missing dollar", "there is no missing", "the $__(27|2) includes", "the error", "wrong to add", "should not add", "shouldn't add", "flawed", "misleading"]
   - category: reasoning
     text: "A farmer needs to cross a river with a fox, a chicken, and a bag of grain. The boat can only carry the farmer and one item. The fox will eat the chicken if left alone, and the chicken will eat the grain. How does the farmer get everything across safely?"
+    answer_type: contains
+    expected_answer: ["chicken first", "takes the chicken"]
   - category: reasoning
     text: "Is it possible for something to be both true and false at the same time? Discuss from the perspectives of classical logic, quantum mechanics, and everyday language."
   - category: reasoning
     text: "Explain the Monty Hall problem and why switching doors gives you a 2/3 probability of winning. Many people find this counterintuitive — why?"
+    answer_type: contains
+    expected_answer: ["2/3", "two-thirds", "two thirds", "66"]
 
   # Code (8)
   - category: code
     text: "Write a Python function that checks if a string is a valid IPv4 address without using regex."
+    answer_type: code_test
+    test_cases:
+      - function: is_valid_ipv4
+        input: "192.168.1.1"
+        expected: true
+      - function: is_valid_ipv4
+        input: "255.255.255.255"
+        expected: true
+      - function: is_valid_ipv4
+        input: "256.1.1.1"
+        expected: false
+      - function: is_valid_ipv4
+        input: "1.2.3"
+        expected: false
+      - function: is_valid_ipv4
+        input: ""
+        expected: false
+      - function: is_valid_ipv4
+        input: "1.2.3.4.5"
+        expected: false
+      - function: is_valid_ipv4
+        input: "01.01.01.01"
+        expected: false
   - category: code
     text: "Write a Python function that finds the longest common subsequence of two strings. Include time and space complexity analysis."
+    answer_type: code_test
+    test_cases:
+      - function: longest_common_subsequence
+        input: ["abcde", "ace"]
+        expected: "ace"
+      - function: longest_common_subsequence
+        input: ["abc", "abc"]
+        expected: "abc"
+      - function: longest_common_subsequence
+        input: ["abc", "def"]
+        expected: ""
   - category: code
     text: "Implement a thread-safe LRU cache in Python with O(1) get and put operations. Include proper locking."
   - category: code
     text: "Write a Python function that converts a Roman numeral string to an integer. Handle all valid Roman numerals from 1 to 3999."
+    answer_type: code_test
+    test_cases:
+      - function: roman_to_int
+        input: "III"
+        expected: 3
+      - function: roman_to_int
+        input: "IV"
+        expected: 4
+      - function: roman_to_int
+        input: "IX"
+        expected: 9
+      - function: roman_to_int
+        input: "XLII"
+        expected: 42
+      - function: roman_to_int
+        input: "MCMXCIV"
+        expected: 1994
+      - function: roman_to_int
+        input: "MMMCMXCIX"
+        expected: 3999
   - category: code
     text: "Implement a basic rate limiter in Python using the token bucket algorithm. It should support configurable rate and burst size."
   - category: code
     text: "Write a Python generator that produces the Fibonacci sequence lazily, then write a function that uses it to find the first Fibonacci number exceeding 1 million."
+    answer_type: code_test
+    test_cases:
+      - function: first_fib_exceeding
+        input: 1000000
+        expected: 1346269
   - category: code
     text: "Implement a trie (prefix tree) in Python with insert, search, and startsWith methods. Analyze the time complexity of each operation."
   - category: code
     text: "Write a Python function that takes a nested dictionary of arbitrary depth and flattens it into a single-level dictionary with dot-notation keys."
+    answer_type: code_test
+    test_cases:
+      - function: flatten_dict
+        input:
+          a:
+            b: 1
+            c:
+              d: 2
+          e: 3
+        expected:
+          a.b: 1
+          a.c.d: 2
+          e: 3
 
   # Creative (6)
   - category: creative
@@ -54,14 +136,24 @@ prompts:
   # Extraction (5)
   - category: extraction
     text: "Extract all the dates and associated events from the following text: 'The company was founded on March 15, 2001. It went public on July 22, 2008. The merger was completed on November 3, 2019.'"
+    answer_type: contains
+    expected_answer: ["March 15, 2001", "July 22, 2008", "November 3, 2019"]
   - category: extraction
     text: "From the following text, extract all people mentioned along with their roles: 'Dr. Sarah Chen led the research team alongside Prof. James Miller, who served as the statistical advisor. Their findings were reviewed by Dr. Amanda Reyes, the department chair, and endorsed by CEO Robert Torres.'"
+    answer_type: contains
+    expected_answer: ["Sarah Chen", "James Miller", "Amanda Reyes", "Robert Torres"]
   - category: extraction
     text: "Parse the following server log entry and extract the timestamp, IP address, HTTP method, URL path, status code, and response size: '192.168.1.45 - - [21/Mar/2024:14:32:01 +0000] \"GET /api/v2/users?page=3 HTTP/1.1\" 200 4523'"
+    answer_type: contains
+    expected_answer: ["192.168.1.45", "GET", "/api/v2/users", "200", "4523"]
   - category: extraction
     text: "Extract all numerical values and their units from this text: 'The reactor operates at 350°C with a pressure of 15.2 MPa. The coolant flow rate is 4500 kg/s, and the thermal output reaches 3200 MWt.'"
+    answer_type: contains
+    expected_answer: ["350", "15.2", "4500", "3200"]
   - category: extraction
     text: "Identify and list all the programming languages, frameworks, and tools mentioned in this job posting: 'We need a developer proficient in TypeScript and Python, with experience in React, Next.js, and FastAPI. Knowledge of Docker, Kubernetes, PostgreSQL, and Redis is required. CI/CD experience with GitHub Actions preferred.'"
+    answer_type: contains
+    expected_answer: ["TypeScript", "Python", "React", "Next.js", "FastAPI", "Docker", "Kubernetes", "PostgreSQL", "Redis", "GitHub Actions"]
 
   # Summarization (5)
   - category: summarization
@@ -98,23 +190,41 @@ prompts:
   # Math (5)
   - category: math
     text: "Prove that the square root of 2 is irrational using proof by contradiction."
+    answer_type: contains
+    expected_answer: ["contradiction", "assume", "rational", "p/q", "a/b", "p²", "a²", "p^2", "a^2"]
   - category: math
     text: "A cylindrical tank has a radius of 3 meters and height of 8 meters. Water is being pumped in at 2 cubic meters per minute. How fast is the water level rising?"
+    answer_type: numeric
+    numeric_answer: 0.0707
+    numeric_tolerance: 0.001
   - category: math
     text: "Explain the birthday paradox: why does it only take 23 people for there to be a 50% chance that two share a birthday? Walk through the math."
+    answer_type: contains
+    expected_answer: ["23", "50%"]
   - category: math
     text: "Calculate the expected number of coin flips needed to get 3 heads in a row. Show your work using a state machine approach."
+    answer_type: numeric
+    numeric_answer: 14.0
+    numeric_tolerance: 0.5
   - category: math
     text: "Explain what eigenvalues and eigenvectors are in linear algebra. Provide a geometric interpretation and one practical application."
 
   # Science (5)
   - category: science
     text: "Explain how CRISPR-Cas9 gene editing works at a molecular level. What are the key components and how do they interact?"
+    answer_type: contains
+    expected_answer: ["guide RNA", "Cas9", "double-strand break"]
   - category: science
     text: "Describe the process of nuclear fusion in the Sun's core. What conditions are necessary, and why haven't we achieved sustained fusion on Earth?"
+    answer_type: contains
+    expected_answer: ["hydrogen", "helium", "temperature", "pressure"]
   - category: science
     text: "Explain the observer effect in quantum mechanics. How does the act of measurement affect quantum systems, and why is this philosophically significant?"
   - category: science
     text: "How do mRNA vaccines work? Describe the mechanism from injection to immune response, and explain how they differ from traditional vaccines."
+    answer_type: contains
+    expected_answer: ["spike protein", "ribosomes", "antibodies"]
   - category: science
     text: "Explain the concept of entropy in thermodynamics and information theory. How are these two seemingly different uses of the same word connected?"
+    answer_type: contains
+    expected_answer: ["disorder", "Shannon", "Boltzmann"]

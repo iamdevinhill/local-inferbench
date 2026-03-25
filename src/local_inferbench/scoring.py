@@ -1,18 +1,23 @@
 """Quality/accuracy scoring for generated responses.
 
 Uses only stdlib — no external LLM judge. Scores responses on length,
-coherence, relevance, completeness, and category-specific heuristics.
+coherence, relevance, completeness, correctness (when verifiable),
+and category-specific heuristics.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import re
+import signal
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Minimal stopwords for relevance scoring
 _STOPWORDS = frozenset({
@@ -46,13 +51,55 @@ _LENGTH_EXPECTATIONS: dict[str, tuple[int, int, int, int]] = {
 
 _DEFAULT_LENGTH = (20, 100, 2000, 5000)
 
-# Weights for composite score
-_WEIGHTS = {
-    "length": 0.15,
-    "coherence": 0.25,
-    "relevance": 0.20,
-    "completeness": 0.15,
-    "category": 0.25,
+# Default weights for composite score
+_DEFAULT_WEIGHTS = {
+    "length": 0.10,
+    "coherence": 0.20,
+    "relevance": 0.15,
+    "completeness": 0.10,
+    "category": 0.20,
+    "correctness": 0.25,
+}
+
+# Per-category weight overrides — correctness gets more weight where verifiable,
+# form-based scores dominate where correctness can't be checked
+_CATEGORY_WEIGHTS: dict[str, dict[str, float]] = {
+    "math": {
+        "length": 0.05, "coherence": 0.10, "relevance": 0.10,
+        "completeness": 0.10, "category": 0.15, "correctness": 0.50,
+    },
+    "code": {
+        "length": 0.05, "coherence": 0.10, "relevance": 0.10,
+        "completeness": 0.10, "category": 0.15, "correctness": 0.50,
+    },
+    "reasoning": {
+        "length": 0.05, "coherence": 0.15, "relevance": 0.10,
+        "completeness": 0.10, "category": 0.20, "correctness": 0.40,
+    },
+    "creative": {
+        "length": 0.10, "coherence": 0.30, "relevance": 0.10,
+        "completeness": 0.10, "category": 0.35, "correctness": 0.05,
+    },
+    "extraction": {
+        "length": 0.05, "coherence": 0.10, "relevance": 0.15,
+        "completeness": 0.10, "category": 0.25, "correctness": 0.35,
+    },
+    "summarization": {
+        "length": 0.10, "coherence": 0.20, "relevance": 0.20,
+        "completeness": 0.10, "category": 0.25, "correctness": 0.15,
+    },
+    "instruction": {
+        "length": 0.10, "coherence": 0.20, "relevance": 0.15,
+        "completeness": 0.10, "category": 0.30, "correctness": 0.15,
+    },
+    "analysis": {
+        "length": 0.10, "coherence": 0.20, "relevance": 0.15,
+        "completeness": 0.10, "category": 0.30, "correctness": 0.15,
+    },
+    "science": {
+        "length": 0.05, "coherence": 0.15, "relevance": 0.15,
+        "completeness": 0.10, "category": 0.25, "correctness": 0.30,
+    },
 }
 
 
@@ -69,6 +116,7 @@ class ResponseScore:
     relevance_score: float
     completeness_score: float
     category_score: float
+    correctness_score: float
 
     overall_score: float
 
@@ -82,6 +130,7 @@ class ResponseScore:
             "relevance_score": round(self.relevance_score, 3),
             "completeness_score": round(self.completeness_score, 3),
             "category_score": round(self.category_score, 3),
+            "correctness_score": round(self.correctness_score, 3),
             "overall_score": round(self.overall_score, 3),
         }
 
@@ -137,6 +186,18 @@ def _char_entropy(text: str) -> float:
     return entropy
 
 
+def _get_weights(category: str, has_correctness: bool) -> dict[str, float]:
+    """Get scoring weights for a category. If no correctness data available,
+    redistribute correctness weight to category and coherence."""
+    weights = _CATEGORY_WEIGHTS.get(category, _DEFAULT_WEIGHTS).copy()
+    if not has_correctness:
+        bonus = weights.get("correctness", 0.0)
+        weights["correctness"] = 0.0
+        weights["category"] = weights.get("category", 0.0) + bonus * 0.6
+        weights["coherence"] = weights.get("coherence", 0.0) + bonus * 0.4
+    return weights
+
+
 # --- Individual scorers ---
 
 
@@ -169,13 +230,13 @@ def score_length(
 
 
 def score_coherence(response: str) -> tuple[float, dict[str, Any]]:
-    """Score based on repetition, structure, and entropy."""
+    """Score based on repetition, structure, entropy, and sentence variation."""
     details: dict[str, Any] = {}
 
     if len(response) < 5:
         return 0.1, details
 
-    # Repetition detection via n-grams
+    # Repetition detection via n-grams — continuous scoring
     words = response.lower().split()
     rep_score = 1.0
     if len(words) >= 5:
@@ -183,19 +244,17 @@ def score_coherence(response: str) -> tuple[float, dict[str, Any]]:
         if trigrams:
             unique_ratio = len(set(trigrams)) / len(trigrams)
             details["trigram_unique_ratio"] = round(unique_ratio, 3)
-            if unique_ratio < 0.3:
-                rep_score = 0.2
-            elif unique_ratio < 0.5:
-                rep_score = 0.5
-            elif unique_ratio < 0.7:
-                rep_score = 0.8
-            else:
-                rep_score = 1.0
+            # Smooth curve: sqrt gives diminishing returns at high uniqueness
+            rep_score = _clamp(unique_ratio ** 0.5)
 
-    # Entropy check
+    # Entropy check — normalized by text length
     entropy = _char_entropy(response)
     details["char_entropy"] = round(entropy, 3)
-    entropy_score = _clamp(entropy / 4.5)  # Normal English ~4.0-4.5 bits
+    # Short text naturally has lower entropy; scale threshold accordingly
+    # English prose ~4.0-4.5 bits, short text ~3.0-3.5 is still fine
+    min_length_chars = 50
+    entropy_target = 3.0 + min(1.5, len(response) / 500)  # 3.0 for short, up to 4.5
+    entropy_score = _clamp(entropy / entropy_target)
 
     # Structure check: has sentences or code patterns
     has_structure = bool(
@@ -206,28 +265,81 @@ def score_coherence(response: str) -> tuple[float, dict[str, Any]]:
     structure_score = 1.0 if has_structure else 0.5
     details["has_structure"] = has_structure
 
-    score = rep_score * 0.4 + entropy_score * 0.3 + structure_score * 0.3
+    # Sentence-length variation — uniform sentence lengths suggest formulaic output
+    sentences = [s.strip() for s in re.split(r"[.!?]+", response) if s.strip()]
+    sent_variation_score = 0.5  # default neutral
+    if len(sentences) >= 3:
+        sent_lengths = [len(s.split()) for s in sentences]
+        mean_len = statistics.mean(sent_lengths)
+        if mean_len > 0:
+            stdev = statistics.stdev(sent_lengths) if len(sent_lengths) > 1 else 0
+            cv = stdev / mean_len  # coefficient of variation
+            details["sentence_length_cv"] = round(cv, 3)
+            # CV of 0.3-0.6 is typical for natural text
+            sent_variation_score = _clamp(cv / 0.4)
+    details["sentence_variation_score"] = round(sent_variation_score, 3)
+
+    # Discourse transitions between sentences
+    transition_words = {
+        "however", "additionally", "furthermore", "moreover", "in contrast",
+        "for example", "for instance", "specifically", "consequently",
+        "therefore", "nevertheless", "meanwhile", "similarly", "conversely",
+        "in addition", "on the other hand", "as a result", "in particular",
+    }
+    lower = response.lower()
+    transitions_found = sum(1 for t in transition_words if t in lower)
+    transition_score = _clamp(transitions_found / 2) if len(sentences) >= 3 else 0.5
+    details["transitions_found"] = transitions_found
+
+    score = (
+        rep_score * 0.30
+        + entropy_score * 0.20
+        + structure_score * 0.20
+        + sent_variation_score * 0.15
+        + transition_score * 0.15
+    )
     return _clamp(score), details
 
 
-def score_relevance(prompt: str, response: str) -> tuple[float, dict[str, Any]]:
-    """Score based on keyword overlap between prompt and response."""
+def score_relevance(
+    prompt: str,
+    response: str,
+    corpus_idf: dict[str, float] | None = None,
+) -> tuple[float, dict[str, Any]]:
+    """Score based on term-importance-weighted overlap between prompt and response."""
     details: dict[str, Any] = {}
 
-    prompt_keywords = set(_tokenize(prompt))
-    response_keywords = set(_tokenize(response))
+    prompt_keywords = _tokenize(prompt)
+    response_keyword_set = set(_tokenize(response))
+    prompt_keyword_set = set(prompt_keywords)
 
-    if not prompt_keywords:
+    if not prompt_keyword_set:
         return 0.5, details  # Can't assess
 
-    overlap = prompt_keywords & response_keywords
-    keyword_coverage = len(overlap) / len(prompt_keywords)
+    # TF-IDF weighted coverage if corpus IDF is available
+    if corpus_idf:
+        weighted_overlap = 0.0
+        total_weight = 0.0
+        for word in prompt_keyword_set:
+            weight = corpus_idf.get(word, 1.0)  # rare words default to high weight
+            total_weight += weight
+            if word in response_keyword_set:
+                weighted_overlap += weight
+        keyword_coverage = weighted_overlap / total_weight if total_weight > 0 else 0.0
+        details["scoring_method"] = "tfidf_weighted"
+    else:
+        overlap = prompt_keyword_set & response_keyword_set
+        keyword_coverage = len(overlap) / len(prompt_keyword_set)
+        details["scoring_method"] = "keyword_overlap"
+
     details["keyword_coverage"] = round(keyword_coverage, 3)
-    details["prompt_keywords"] = len(prompt_keywords)
-    details["overlapping_keywords"] = len(overlap)
+    details["prompt_keywords"] = len(prompt_keyword_set)
+    details["overlapping_keywords"] = len(prompt_keyword_set & response_keyword_set)
 
     # Penalize if response is just echoing the prompt
-    similarity = SequenceMatcher(None, prompt.lower(), response.lower()[:len(prompt) * 2]).ratio()
+    similarity = SequenceMatcher(
+        None, prompt.lower(), response.lower()[:len(prompt) * 2]
+    ).ratio()
     details["prompt_echo_similarity"] = round(similarity, 3)
 
     echo_penalty = 1.0
@@ -258,6 +370,236 @@ def score_completeness(
         return (0.7 if ends_at_boundary else 0.3), details
 
     return 0.5, details
+
+
+# --- Correctness verification ---
+
+
+def _check_contains(response: str, expected: list[str]) -> tuple[float, dict[str, Any]]:
+    """Check if response contains any of the expected answer strings."""
+    lower = response.lower()
+    matched = [ans for ans in expected if ans.lower() in lower]
+    return (1.0 if matched else 0.0), {"matched": matched, "check": "contains"}
+
+
+def _check_numeric(
+    response: str, expected: float, tolerance: float = 0.01
+) -> tuple[float, dict[str, Any]]:
+    """Check if response contains the expected numeric value."""
+    # Extract all numbers from response
+    numbers = re.findall(r"-?\d+\.?\d*", response)
+    parsed = []
+    for n in numbers:
+        try:
+            parsed.append(float(n))
+        except ValueError:
+            continue
+
+    # Check for fraction patterns like 2/(9π) or 2/(9*pi)
+    fractions = re.findall(r"(\d+)\s*/\s*\(?\s*(\d+)\s*[*×]?\s*(?:π|pi|\\pi)\s*\)?", response.lower())
+    for num, denom in fractions:
+        try:
+            parsed.append(float(num) / (float(denom) * math.pi))
+        except (ValueError, ZeroDivisionError):
+            continue
+
+    for val in parsed:
+        if abs(val - expected) <= tolerance:
+            return 1.0, {"found_value": val, "expected": expected, "check": "numeric"}
+
+    # Partial credit if close
+    if parsed:
+        closest = min(parsed, key=lambda x: abs(x - expected))
+        relative_error = abs(closest - expected) / max(abs(expected), 1e-9)
+        if relative_error < 0.1:
+            return 0.5, {"closest": closest, "expected": expected, "check": "numeric"}
+
+    return 0.0, {"numbers_found": parsed[:10], "expected": expected, "check": "numeric"}
+
+
+def _extract_python_code(response: str) -> str | None:
+    """Extract Python code from a response (fenced or indented)."""
+    # Try fenced code blocks first
+    fenced = re.findall(r"```(?:python)?\s*\n(.*?)```", response, re.DOTALL)
+    if fenced:
+        return fenced[0].strip()
+
+    # Try indented blocks (4+ spaces or tab after a blank line)
+    lines = response.split("\n")
+    code_lines: list[str] = []
+    in_code = False
+    for line in lines:
+        if re.match(r"^(    |\t)\S", line) or (in_code and (line.strip() == "" or re.match(r"^(    |\t)", line))):
+            code_lines.append(line)
+            in_code = True
+        elif in_code and line.strip():
+            # Non-indented non-empty line while in code — check if it starts a def/class
+            if re.match(r"^(def |class |@)", line):
+                code_lines.append(line)
+            else:
+                break
+
+    if code_lines:
+        return "\n".join(code_lines).strip()
+    return None
+
+
+class _CodeExecTimeout(Exception):
+    pass
+
+
+def _timeout_handler(signum: int, frame: object) -> None:
+    raise _CodeExecTimeout("Code execution timed out")
+
+
+def _check_code_execution(
+    response: str, test_cases: list[dict[str, object]]
+) -> tuple[float, dict[str, Any]]:
+    """Extract code from response and run test cases against it."""
+    details: dict[str, Any] = {"check": "code_execution"}
+    code = _extract_python_code(response)
+    if code is None:
+        details["error"] = "no_code_found"
+        return 0.0, details
+
+    # Syntax check
+    try:
+        compile(code, "<benchmark>", "exec")
+    except SyntaxError as e:
+        details["error"] = f"syntax_error: {e}"
+        return 0.1, details  # Small credit for attempting code
+
+    details["syntax_valid"] = True
+
+    # Execute code in restricted namespace
+    namespace: dict[str, Any] = {"__builtins__": {
+        "range": range, "len": len, "int": int, "float": float, "str": str,
+        "bool": bool, "list": list, "dict": dict, "set": set, "tuple": tuple,
+        "max": max, "min": min, "abs": abs, "sum": sum, "enumerate": enumerate,
+        "zip": zip, "map": map, "filter": filter, "sorted": sorted,
+        "reversed": reversed, "isinstance": isinstance, "type": type,
+        "print": lambda *a, **kw: None,  # suppress output
+        "True": True, "False": False, "None": None,
+        "ValueError": ValueError, "TypeError": TypeError,
+        "KeyError": KeyError, "IndexError": IndexError,
+        "Exception": Exception, "StopIteration": StopIteration,
+    }}
+
+    # Set up timeout (Unix only)
+    old_handler = None
+    try:
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(5)  # 5 second timeout
+    except (OSError, AttributeError):
+        pass  # signal.SIGALRM not available on this platform
+
+    try:
+        exec(code, namespace)  # noqa: S102
+    except _CodeExecTimeout:
+        details["error"] = "execution_timeout"
+        return 0.15, details
+    except Exception as e:
+        details["error"] = f"execution_error: {type(e).__name__}: {e}"
+        return 0.15, details
+    finally:
+        try:
+            signal.alarm(0)
+            if old_handler is not None:
+                signal.signal(signal.SIGALRM, old_handler)
+        except (OSError, AttributeError):
+            pass
+
+    # Run test cases
+    passed = 0
+    total = len(test_cases)
+    test_results = []
+
+    for tc in test_cases:
+        func_name = tc.get("function", "")
+        args = tc.get("input")
+        expected = tc.get("expected")
+
+        if not func_name or func_name not in namespace:
+            # Try to find the first callable function defined in the code
+            for name, val in namespace.items():
+                if callable(val) and not name.startswith("_"):
+                    func_name = name
+                    break
+
+        func = namespace.get(func_name)
+        if not callable(func):
+            test_results.append({"status": "skip", "reason": f"function '{func_name}' not found"})
+            continue
+
+        try:
+            if old_handler is not None:
+                signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(2)
+
+            if isinstance(args, list):
+                result = func(*args)
+            else:
+                result = func(args)
+
+            signal.alarm(0)
+
+            if result == expected:
+                passed += 1
+                test_results.append({"status": "pass"})
+            else:
+                test_results.append({"status": "fail", "got": str(result), "expected": str(expected)})
+        except _CodeExecTimeout:
+            test_results.append({"status": "timeout"})
+        except Exception as e:
+            test_results.append({"status": "error", "error": f"{type(e).__name__}: {e}"})
+        finally:
+            try:
+                signal.alarm(0)
+                if old_handler is not None:
+                    signal.signal(signal.SIGALRM, old_handler)
+            except (OSError, AttributeError):
+                pass
+
+    details["tests_passed"] = passed
+    details["tests_total"] = total
+    details["test_results"] = test_results
+
+    if total == 0:
+        return 0.3, details  # Code ran but no tests to verify
+
+    # Base score from test pass rate, with credit for valid syntax + execution
+    pass_rate = passed / total
+    score = 0.2 + 0.8 * pass_rate  # 0.2 baseline for valid, executable code
+    return _clamp(score), details
+
+
+def score_correctness(
+    response: str,
+    expected_answer: list[str] | None = None,
+    answer_type: str | None = None,
+    numeric_answer: float | None = None,
+    numeric_tolerance: float = 0.01,
+    test_cases: list[dict[str, object]] | None = None,
+) -> tuple[float, dict[str, Any]]:
+    """Score correctness when verification data is available.
+
+    Returns (score, details). When no verification data is provided,
+    returns a neutral score of 0.5 (unknown correctness).
+    """
+    if answer_type == "contains" and expected_answer:
+        return _check_contains(response, expected_answer)
+
+    if answer_type == "numeric" and numeric_answer is not None:
+        return _check_numeric(response, numeric_answer, numeric_tolerance)
+
+    if answer_type == "code_test" and test_cases:
+        return _check_code_execution(response, test_cases)
+
+    # No verification data — return neutral
+    return 0.5, {"check": "none"}
+
+
+# --- Category-specific heuristic scorers ---
 
 
 def score_category(
@@ -321,6 +663,17 @@ def _score_code(
         signals += 1
     details["brackets_balanced"] = brackets_ok
 
+    # Syntax check — try to compile extracted code
+    code = _extract_python_code(response)
+    if code is not None:
+        checks += 1
+        try:
+            compile(code, "<benchmark>", "exec")
+            signals += 1
+            details["syntax_valid"] = True
+        except SyntaxError:
+            details["syntax_valid"] = False
+
     score = signals / checks if checks > 0 else 0.5
     return _clamp(score), details
 
@@ -364,8 +717,6 @@ def _score_creative(
 def _score_extraction(
     response: str, prompt: str, details: dict[str, Any]
 ) -> tuple[float, dict[str, Any]]:
-    # Check if data from prompt appears structured in response
-    # Look for dates, numbers, names from the prompt
     prompt_numbers = set(re.findall(r"\d{4}|\d+\.\d+|\d+", prompt))
     response_numbers = set(re.findall(r"\d{4}|\d+\.\d+|\d+", response))
 
@@ -373,7 +724,6 @@ def _score_extraction(
     coverage = len(overlap) / len(prompt_numbers) if prompt_numbers else 0.5
     details["number_extraction_coverage"] = round(coverage, 3)
 
-    # Check for structured output (lists, key-value pairs)
     has_structure = bool(
         re.search(r"[-*•]\s", response)
         or re.search(r"\d+[.)]\s", response)
@@ -388,11 +738,9 @@ def _score_extraction(
 def _score_summarization(
     response: str, prompt: str, details: dict[str, Any]
 ) -> tuple[float, dict[str, Any]]:
-    # Summaries should be shorter than the prompt content
     ratio = len(response) / max(len(prompt), 1)
     details["length_ratio"] = round(ratio, 3)
 
-    # Key terms coverage
     prompt_words = set(_tokenize(prompt))
     response_words = set(_tokenize(response))
     coverage = len(prompt_words & response_words) / max(len(prompt_words), 1)
@@ -406,7 +754,6 @@ def _score_summarization(
 def _score_instruction(
     lower: str, details: dict[str, Any]
 ) -> tuple[float, dict[str, Any]]:
-    # Look for sequential markers
     seq_patterns = re.findall(
         r"(\d+[.)]\s|step \d|first|second|third|then|next|finally|after that)", lower
     )
@@ -432,7 +779,6 @@ def _score_analysis(
 def _score_math(
     lower: str, details: dict[str, Any]
 ) -> tuple[float, dict[str, Any]]:
-    # Math responses should have numbers, equations, or mathematical terms
     has_numbers = bool(re.search(r"\d+", lower))
     math_terms = [
         "equation", "formula", "proof", "theorem", "therefore",
@@ -450,7 +796,6 @@ def _score_math(
 def _score_science(
     lower: str, details: dict[str, Any]
 ) -> tuple[float, dict[str, Any]]:
-    # Science responses should be explanatory with technical terms
     explanation_markers = [
         "because", "due to", "causes", "results in", "mechanism",
         "process", "occurs", "involves", "molecules", "atoms",
@@ -462,6 +807,32 @@ def _score_science(
     return score, details
 
 
+# --- Corpus IDF computation ---
+
+
+def compute_corpus_idf(all_prompts: list[str]) -> dict[str, float]:
+    """Compute IDF weights from a corpus of prompt texts.
+
+    Words appearing in many prompts get low weight (they're generic),
+    words appearing in few prompts get high weight (they're distinctive).
+    """
+    if not all_prompts:
+        return {}
+
+    n_docs = len(all_prompts)
+    doc_freq: Counter[str] = Counter()
+    for prompt in all_prompts:
+        unique_words = set(_tokenize(prompt))
+        for word in unique_words:
+            doc_freq[word] += 1
+
+    idf: dict[str, float] = {}
+    for word, df in doc_freq.items():
+        idf[word] = math.log(n_docs / df) + 1.0  # smoothed IDF
+
+    return idf
+
+
 # --- Main scoring interface ---
 
 
@@ -471,20 +842,38 @@ def score_response(
     response_text: str,
     finish_reason: str,
     max_tokens: int = 512,
+    expected_answer: list[str] | None = None,
+    answer_type: str | None = None,
+    numeric_answer: float | None = None,
+    numeric_tolerance: float = 0.01,
+    test_cases: list[dict[str, object]] | None = None,
+    corpus_idf: dict[str, float] | None = None,
 ) -> ResponseScore:
     """Score a single response across all quality dimensions."""
     length_s, length_d = score_length(response_text, prompt_category, max_tokens)
     coherence_s, coherence_d = score_coherence(response_text)
-    relevance_s, relevance_d = score_relevance(prompt_text, response_text)
+    relevance_s, relevance_d = score_relevance(prompt_text, response_text, corpus_idf)
     completeness_s, completeness_d = score_completeness(response_text, finish_reason)
     category_s, category_d = score_category(response_text, prompt_category, prompt_text)
+    correctness_s, correctness_d = score_correctness(
+        response_text,
+        expected_answer=expected_answer,
+        answer_type=answer_type,
+        numeric_answer=numeric_answer,
+        numeric_tolerance=numeric_tolerance,
+        test_cases=test_cases,
+    )
+
+    has_correctness = answer_type is not None
+    weights = _get_weights(prompt_category, has_correctness)
 
     overall = (
-        length_s * _WEIGHTS["length"]
-        + coherence_s * _WEIGHTS["coherence"]
-        + relevance_s * _WEIGHTS["relevance"]
-        + completeness_s * _WEIGHTS["completeness"]
-        + category_s * _WEIGHTS["category"]
+        length_s * weights["length"]
+        + coherence_s * weights["coherence"]
+        + relevance_s * weights["relevance"]
+        + completeness_s * weights["completeness"]
+        + category_s * weights["category"]
+        + correctness_s * weights["correctness"]
     )
 
     return ResponseScore(
@@ -496,6 +885,7 @@ def score_response(
         relevance_score=relevance_s,
         completeness_score=completeness_s,
         category_score=category_s,
+        correctness_score=correctness_s,
         overall_score=round(overall, 3),
         details={
             "length": length_d,
@@ -503,6 +893,8 @@ def score_response(
             "relevance": relevance_d,
             "completeness": completeness_d,
             "category": category_d,
+            "correctness": correctness_d,
+            "weights_used": weights,
         },
     )
 

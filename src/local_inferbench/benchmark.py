@@ -152,9 +152,17 @@ class Benchmark:
         # Quality scoring
         scoring_summary = None
         if self.config.quality_scoring and gen_results:
-            from local_inferbench.scoring import score_response, compute_scoring_summary
+            from local_inferbench.scoring import (
+                compute_corpus_idf,
+                compute_scoring_summary,
+                score_response,
+            )
 
             self._console.print("  Scoring response quality...", style="dim")
+
+            # Compute corpus IDF for relevance weighting
+            corpus_idf = compute_corpus_idf([p.text for p in prompts])
+
             response_scores = []
             for prompt, gen_result in zip(prompts, gen_results):
                 rs = score_response(
@@ -163,6 +171,12 @@ class Benchmark:
                     response_text=gen_result.text,
                     finish_reason=gen_result.finish_reason,
                     max_tokens=self.config.max_tokens,
+                    expected_answer=prompt.expected_answer,
+                    answer_type=prompt.answer_type,
+                    numeric_answer=prompt.numeric_answer,
+                    numeric_tolerance=prompt.numeric_tolerance,
+                    test_cases=prompt.test_cases,
+                    corpus_idf=corpus_idf,
                 )
                 response_scores.append(rs)
             scoring_summary = compute_scoring_summary(response_scores)

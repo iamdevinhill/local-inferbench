@@ -16,6 +16,11 @@ class Prompt(BaseModel):
 
     category: str
     text: str
+    expected_answer: list[str] | None = None
+    answer_type: str | None = None  # "contains", "numeric", "code_test"
+    numeric_answer: float | None = None
+    numeric_tolerance: float = 0.01
+    test_cases: list[dict[str, object]] | None = None
 
 
 class PromptProfile(BaseModel):
